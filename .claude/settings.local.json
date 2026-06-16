@@ -29,7 +29,8 @@
       "WebFetch(domain:raw.githubusercontent.com)",
       "Bash(npm uninstall *)",
       "Bash(nohup npx expo start --web --offline)",
-      "Bash(echo \"started with pid $!\")"
+      "Bash(echo \"started with pid $!\")",
+      "Bash(git status *)"
     ]
   }
 }
