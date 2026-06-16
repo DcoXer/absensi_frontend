@@ -21,6 +21,7 @@ type AttendanceRecord = {
   check_in_time: string | null;
   check_out_time: string | null;
   status: 'hadir' | 'terlambat' | 'tidak_hadir';
+  workingMinutes: number | null;
 };
 
 type FilterKey = 'semua' | 'hadir' | 'terlambat' | 'tidak_hadir';
@@ -66,41 +67,31 @@ export default function HistoryScreen() {
       });
       const data = await res.json();
 
-      // Backend returns paginated: data.data.data is the array of individual records
+      // Backend returns paginated, already grouped per day:
+      // data.data.data is an array of { date, check_in, check_out, working_minutes, ... }
       const rawRecords: any[] = data.data?.data ?? data.data ?? [];
 
-      // Group check_in / check_out by date (YYYY-MM-DD)
-      const grouped: Record<string, { check_in?: any; check_out?: any }> = {};
-      for (const rec of rawRecords) {
-        const date = rec.created_at?.split('T')[0] ?? '';
-        if (!grouped[date]) grouped[date] = {};
-        if (rec.type === 'check_in') grouped[date].check_in = rec;
-        if (rec.type === 'check_out') grouped[date].check_out = rec;
-      }
+      const toTime = (iso?: string | null) =>
+        iso ? new Date(iso).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }) : null;
 
-      // Convert to AttendanceRecord
-      const parsed: AttendanceRecord[] = Object.entries(grouped)
-        .sort(([a], [b]) => b.localeCompare(a))
-        .map(([date, { check_in, check_out }]) => {
-          const toTime = (iso: string) =>
-            new Date(iso).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
-
-          const checkInTime = check_in?.created_at ? toTime(check_in.created_at) : null;
-          const checkOutTime = check_out?.created_at ? toTime(check_out.created_at) : null;
+      const parsed: AttendanceRecord[] = rawRecords
+        .slice()
+        .sort((a, b) => String(b.date).localeCompare(String(a.date)))
+        .map((rec) => {
+          const { check_in, check_out } = rec;
 
           let status: AttendanceRecord['status'] = 'tidak_hadir';
           if (check_in) {
-            const h = new Date(check_in.created_at).getHours();
-            const m = new Date(check_in.created_at).getMinutes();
-            status = h > 9 || (h === 9 && m > 0) ? 'terlambat' : 'hadir';
+            status = check_in.is_late ? 'terlambat' : 'hadir';
           }
 
           return {
-            id: String(check_in?.id ?? check_out?.id ?? date),
-            date,
-            check_in_time: checkInTime,
-            check_out_time: checkOutTime,
+            id: String(check_in?.id ?? check_out?.id ?? rec.date),
+            date: rec.date,
+            check_in_time: toTime(check_in?.created_at),
+            check_out_time: toTime(check_out?.created_at),
             status,
+            workingMinutes: typeof rec.working_minutes === 'number' ? rec.working_minutes : null,
           };
         });
 
@@ -246,7 +237,7 @@ export default function HistoryScreen() {
 function RecordCard({ item }: { item: AttendanceRecord }) {
   const cfg = STATUS_CONFIG[item.status] ?? STATUS_CONFIG.tidak_hadir;
   const border = BORDER_COLOR[item.status] ?? '#EF4444';
-  const duration = getDuration(item.check_in_time, item.check_out_time);
+  const duration = getDuration(item.workingMinutes);
 
   return (
     <View style={[styles.card, { borderLeftColor: border }]}>
@@ -271,7 +262,7 @@ function RecordCard({ item }: { item: AttendanceRecord }) {
           {duration && (
             <View style={styles.durationChip}>
               <Ionicons name="hourglass-outline" size={10} color="#94A3B8" />
-              <Text style={styles.durationText}>{duration}</Text>
+              <Text style={styles.durationText} numberOfLines={1}>{duration}</Text>
             </View>
           )}
           <View style={styles.timeDividerLine} />
@@ -346,17 +337,12 @@ function getDayName(dateStr: string) {
   } catch { return ''; }
 }
 
-function getDuration(checkIn: string | null, checkOut: string | null): string | null {
-  if (!checkIn || !checkOut) return null;
-  try {
-    const [inH, inM] = checkIn.split(':').map(Number);
-    const [outH, outM] = checkOut.split(':').map(Number);
-    const totalMin = (outH * 60 + outM) - (inH * 60 + inM);
-    if (totalMin <= 0) return null;
-    const h = Math.floor(totalMin / 60);
-    const m = totalMin % 60;
-    return h > 0 ? `${h}j ${m}m` : `${m}m`;
-  } catch { return null; }
+function getDuration(workingMinutes: number | null): string | null {
+  if (workingMinutes === null) return null;
+  if (workingMinutes <= 0) return '< 1 menit';
+  const h = Math.floor(workingMinutes / 60);
+  const m = workingMinutes % 60;
+  return h > 0 ? `${h} jam ${m} menit` : `${m} menit`;
 }
 
 // ── Constants & styles ────────────────────────────────────────────────────────
@@ -487,7 +473,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row', alignItems: 'center',
     paddingHorizontal: 16, paddingVertical: 14, gap: 8,
   },
-  timeBlock: { flex: 1, alignItems: 'flex-start', gap: 4 },
+  timeBlock: { flex: 0.8, alignItems: 'flex-start', gap: 4 },
   timeBlockRight: { alignItems: 'flex-end' },
   timeIconWrap: {
     width: 28, height: 28, borderRadius: 8,
@@ -498,12 +484,12 @@ const styles = StyleSheet.create({
   timeValue: { fontSize: 15, fontWeight: '800', color: '#1E293B' },
   timeValueEmpty: { color: '#CBD5E1', fontWeight: '600' },
 
-  timeDivider: { flex: 1, alignItems: 'center', gap: 4 },
+  timeDivider: { flex: 1.4, alignItems: 'center', gap: 4 },
   timeDividerLine: { height: 1, backgroundColor: '#E2E8F0', width: '100%' },
   durationChip: {
-    flexDirection: 'row', alignItems: 'center', gap: 3,
+    flexDirection: 'row', alignItems: 'center', gap: 4,
     backgroundColor: '#F8FAFC', borderRadius: 8,
-    paddingHorizontal: 6, paddingVertical: 3,
+    paddingHorizontal: 8, paddingVertical: 4,
   },
-  durationText: { fontSize: 10, color: '#94A3B8', fontWeight: '600' },
+  durationText: { fontSize: 11, color: '#64748B', fontWeight: '700' },
 });

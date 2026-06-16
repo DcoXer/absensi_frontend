@@ -1,22 +1,27 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Image,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
   View,
+  useWindowDimensions,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { router, Stack } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import * as ImagePicker from 'expo-image-picker';
+import { CameraView, CameraCapturedPicture, useCameraPermissions } from 'expo-camera';
 
 import { useAuth } from '@/context/AuthContext';
 import { API_ENDPOINTS } from '@/constants/api';
+import OvalCameraOverlay from '@/components/OvalCameraOverlay';
+import CalendarPicker from '@/components/CalendarPicker';
 
 const PRIMARY  = '#1565C0';
 const SUCCESS  = '#16A34A';
@@ -40,19 +45,38 @@ const TYPES: {
 export default function RequestFormScreen() {
   const { token } = useAuth();
   const insets    = useSafeAreaInsets();
+  const { width: SW, height: SH } = useWindowDimensions();
+  const cameraRef = useRef<CameraView>(null);
 
   const [type, setType]           = useState<RequestType | null>(null);
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate]     = useState('');
-  const [startTime, setStartTime] = useState('');
-  const [endTime, setEndTime]     = useState('');
   const [reason, setReason]       = useState('');
   const [attachment, setAttachment] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError]           = useState('');
 
+  // Lembur: start_photo wajib live capture (diverifikasi ke wajah referensi), beda dari
+  // attachment surat sakit yang boleh dari galeri.
+  const [cameraPermission, requestCameraPermission] = useCameraPermissions();
+  const [cameraOpen, setCameraOpen] = useState(false);
+  const [startPhoto, setStartPhoto] = useState<CameraCapturedPicture | null>(null);
+  const [cameraError, setCameraError] = useState('');
+
   const selected = TYPES.find(t => t.key === type);
   const accentColor = selected?.color ?? PRIMARY;
+
+  // Each "Jenis Pengajuan" tab is conceptually its own form — switching tabs
+  // shouldn't carry over a previous tab's date/time/reason/attachment.
+  function handleSelectType(key: RequestType) {
+    setType(key);
+    setError('');
+    setStartDate('');
+    setEndDate('');
+    setReason('');
+    setAttachment(null);
+    setStartPhoto(null);
+  }
 
   async function pickAttachment() {
     const { granted } = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -68,12 +92,38 @@ export default function RequestFormScreen() {
     }
   }
 
+  async function handleOpenCamera() {
+    setCameraError('');
+    if (!cameraPermission?.granted) {
+      const { granted } = await requestCameraPermission();
+      if (!granted) { setCameraError('Izin kamera ditolak.'); return; }
+    }
+    setCameraOpen(true);
+  }
+
+  async function handleCaptureStartPhoto() {
+    if (!cameraRef.current) return;
+    setCameraError('');
+    try {
+      const captured = await cameraRef.current.takePictureAsync({
+        base64: true, quality: 0.7, imageType: 'jpg',
+      });
+      if (!captured) throw new Error('Foto tidak berhasil diambil.');
+      setStartPhoto(captured);
+      setCameraOpen(false);
+    } catch (e: any) {
+      setCameraError(e.message ?? 'Gagal mengambil foto.');
+    }
+  }
+
   async function handleSubmit() {
     if (!type) { setError('Pilih jenis pengajuan.'); return; }
-    if (!startDate) { setError('Tanggal mulai wajib diisi.'); return; }
     if (!reason.trim()) { setError('Alasan wajib diisi.'); return; }
-    if (type === 'lembur' && (!startTime || !endTime)) {
-      setError('Jam mulai dan selesai wajib diisi untuk lembur.'); return;
+    // Lembur: tanggal & waktu dicatat otomatis oleh backend dari started_at/ended_at —
+    // client tidak boleh mengasumsikan/mengirim nilainya sendiri (zero-trust).
+    if (type !== 'lembur' && !startDate) { setError('Tanggal mulai wajib diisi.'); return; }
+    if (type === 'lembur' && !startPhoto?.base64) {
+      setError('Selfie mulai lembur wajib diambil.'); return;
     }
     if (type === 'sakit' && !attachment) {
       setError('Foto surat dokter wajib dilampirkan.'); return;
@@ -81,9 +131,13 @@ export default function RequestFormScreen() {
 
     setError(''); setSubmitting(true);
     try {
-      const body: Record<string, any> = { type, start_date: startDate, reason };
-      if (endDate) body.end_date = endDate;
-      if (type === 'lembur') { body.start_time = startTime; body.end_time = endTime; }
+      const body: Record<string, any> = { type, reason };
+      if (type === 'lembur') {
+        body.start_photo = startPhoto!.base64;
+      } else {
+        body.start_date = startDate;
+        if (endDate) body.end_date = endDate;
+      }
       if (type === 'sakit' && attachment) body.attachment = attachment;
 
       const res = await fetch(API_ENDPOINTS.requests, {
@@ -103,6 +157,40 @@ export default function RequestFormScreen() {
     } finally {
       setSubmitting(false);
     }
+  }
+
+  // ── Fullscreen camera (selfie mulai lembur) ─────────────────────────────────
+  if (cameraOpen) {
+    return (
+      <View style={styles.cameraFlex}>
+        <Stack.Screen options={{ headerShown: false }} />
+        <CameraView ref={cameraRef} style={styles.cameraFlex} facing="front" />
+        <OvalCameraOverlay screenWidth={SW} screenHeight={SH} />
+
+        <View style={[styles.camTopBar, { paddingTop: insets.top + 8 }]}>
+          <TouchableOpacity style={styles.camBackBtn} onPress={() => setCameraOpen(false)}>
+            <Ionicons name="close" size={22} color="#fff" />
+          </TouchableOpacity>
+          <Text style={styles.camTopTitle}>Selfie Mulai Lembur</Text>
+          <View style={{ width: 40 }} />
+        </View>
+
+        <View style={[styles.cameraControls, { paddingBottom: insets.bottom + 28 }]}>
+          {cameraError ? (
+            <View style={styles.cameraErrorBox}>
+              <Ionicons name="alert-circle" size={14} color="#FCA5A5" />
+              <Text style={styles.cameraErrorText}>{cameraError}</Text>
+            </View>
+          ) : null}
+          <TouchableOpacity style={styles.captureBtn} onPress={handleCaptureStartPhoto} activeOpacity={0.85}>
+            <View style={styles.captureRing}>
+              <View style={styles.captureInner} />
+            </View>
+          </TouchableOpacity>
+          <Text style={styles.captureBtnLabel}>Ambil Foto</Text>
+        </View>
+      </View>
+    );
   }
 
   return (
@@ -139,7 +227,7 @@ export default function RequestFormScreen() {
                     { borderColor: type === t.key ? t.color : '#E2E8F0' },
                     type === t.key && { backgroundColor: t.bg },
                   ]}
-                  onPress={() => { setType(t.key); setError(''); }}
+                  onPress={() => handleSelectType(t.key)}
                   activeOpacity={0.8}
                 >
                   <View style={[styles.typeIcon, { backgroundColor: type === t.key ? t.bg : '#F8FAFC' }]}>
@@ -157,51 +245,40 @@ export default function RequestFormScreen() {
             </View>
           </View>
 
-          {/* Date fields */}
-          {type && (
+          {/* Date fields — tidak berlaku untuk lembur (tanggal & waktu dicatat otomatis backend) */}
+          {type && type !== 'lembur' && (
             <View style={styles.section}>
               <Text style={styles.sectionLabel}>Tanggal</Text>
               <View style={styles.card}>
-                <Field
+                <DateField
                   label="Tanggal Mulai"
                   placeholder="YYYY-MM-DD"
                   value={startDate}
                   onChangeText={setStartDate}
-                  icon="calendar-outline"
+                  minimumDate={new Date()}
                 />
                 {(type === 'cuti' || type === 'sakit') && (
                   <>
                     <Divider />
-                    <Field
+                    <DateField
                       label="Tanggal Selesai"
                       placeholder="YYYY-MM-DD (opsional)"
                       value={endDate}
                       onChangeText={setEndDate}
-                      icon="calendar-outline"
-                    />
-                  </>
-                )}
-                {type === 'lembur' && (
-                  <>
-                    <Divider />
-                    <Field
-                      label="Jam Mulai"
-                      placeholder="18:00"
-                      value={startTime}
-                      onChangeText={setStartTime}
-                      icon="time-outline"
-                    />
-                    <Divider />
-                    <Field
-                      label="Jam Selesai"
-                      placeholder="21:00"
-                      value={endTime}
-                      onChangeText={setEndTime}
-                      icon="time-outline"
+                      minimumDate={parseISODate(startDate) ?? new Date()}
                     />
                   </>
                 )}
               </View>
+            </View>
+          )}
+
+          {type === 'lembur' && (
+            <View style={styles.infoNote}>
+              <Ionicons name="information-circle-outline" size={16} color={WARNING} />
+              <Text style={styles.infoNoteText}>
+                Tanggal & waktu mulai lembur dicatat otomatis saat selfie diverifikasi. Tidak perlu input manual.
+              </Text>
             </View>
           )}
 
@@ -245,6 +322,30 @@ export default function RequestFormScreen() {
             </View>
           )}
 
+          {/* Selfie mulai lembur (lembur only) — live capture, diverifikasi ke wajah referensi */}
+          {type === 'lembur' && (
+            <View style={styles.section}>
+              <Text style={styles.sectionLabel}>Selfie Mulai Lembur <Text style={styles.required}>*Wajib</Text></Text>
+              {startPhoto ? (
+                <TouchableOpacity style={styles.startPhotoPreview} onPress={handleOpenCamera} activeOpacity={0.85}>
+                  <Image source={{ uri: startPhoto.uri }} style={styles.startPhotoImg} resizeMode="cover" />
+                  <View style={styles.startPhotoBadge}>
+                    <Ionicons name="checkmark-circle" size={22} color={SUCCESS} />
+                  </View>
+                  <View style={styles.startPhotoRetake}>
+                    <Ionicons name="camera-reverse-outline" size={14} color="#fff" />
+                    <Text style={styles.startPhotoRetakeText}>Ambil Ulang</Text>
+                  </View>
+                </TouchableOpacity>
+              ) : (
+                <TouchableOpacity style={styles.attachBtn} onPress={handleOpenCamera} activeOpacity={0.8}>
+                  <Ionicons name="camera-outline" size={24} color="#94A3B8" />
+                  <Text style={styles.attachText}>Buka kamera & ambil selfie</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          )}
+
           {/* Error */}
           {!!error && (
             <View style={styles.errorBox}>
@@ -275,18 +376,44 @@ export default function RequestFormScreen() {
 
 // ── Sub-components ────────────────────────────────────────────────────────────
 
-function Field({
-  label, placeholder, value, onChangeText, icon,
+function Divider() {
+  return <View style={styles.divider} />;
+}
+
+// ── Date helpers ─────────────────────────────────────────────────────────────
+
+function toISODate(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+function parseISODate(value: string): Date | undefined {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value.trim());
+  if (!m) return undefined;
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  return Number.isNaN(d.getTime()) ? undefined : d;
+}
+
+/**
+ * Date field that can be typed manually (YYYY-MM-DD) or filled via a custom
+ * calendar dropdown (consistent look on Android & iOS, no OS-theme contrast
+ * issues like the native picker had).
+ */
+function DateField({
+  label, placeholder, value, onChangeText, minimumDate,
 }: {
   label: string; placeholder: string; value: string;
   onChangeText: (v: string) => void;
-  icon: keyof typeof Ionicons.glyphMap;
+  minimumDate?: Date;
 }) {
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const selectedDate = parseISODate(value);
+
   return (
     <View style={styles.fieldRow}>
-      <View style={styles.fieldIconWrap}>
-        <Ionicons name={icon} size={16} color={PRIMARY} />
-      </View>
+      <TouchableOpacity style={styles.fieldIconWrap} onPress={() => setPickerOpen(true)} activeOpacity={0.75}>
+        <Ionicons name="calendar-outline" size={16} color={PRIMARY} />
+      </TouchableOpacity>
       <View style={styles.fieldBody}>
         <Text style={styles.fieldLabel}>{label}</Text>
         <TextInput
@@ -297,12 +424,17 @@ function Field({
           onChangeText={onChangeText}
         />
       </View>
+
+      <CalendarPicker
+        visible={pickerOpen}
+        onClose={() => setPickerOpen(false)}
+        value={selectedDate}
+        minimumDate={minimumDate}
+        title={label}
+        onSelect={(date) => { onChangeText(toISODate(date)); setPickerOpen(false); }}
+      />
     </View>
   );
-}
-
-function Divider() {
-  return <View style={styles.divider} />;
 }
 
 // ── Styles ────────────────────────────────────────────────────────────────────
@@ -330,6 +462,13 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase', letterSpacing: 0.8,
   },
   required: { color: DANGER, textTransform: 'none' },
+
+  infoNote: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: 8,
+    backgroundColor: '#FFFBEB', borderRadius: 12,
+    padding: 12, borderWidth: 1, borderColor: '#FDE68A',
+  },
+  infoNoteText: { flex: 1, fontSize: 12, color: '#92400E', lineHeight: 17 },
 
   // Type grid
   typeGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
@@ -401,4 +540,54 @@ const styles = StyleSheet.create({
   },
   submitBtnDisabled: { opacity: 0.6 },
   submitText: { color: '#fff', fontSize: 15, fontWeight: '700' },
+
+  // Start-photo (lembur) preview
+  startPhotoPreview: {
+    height: 180, borderRadius: 14, overflow: 'hidden',
+    borderWidth: 2, borderColor: SUCCESS,
+  },
+  startPhotoImg: { width: '100%', height: '100%' },
+  startPhotoBadge: {
+    position: 'absolute', top: 8, right: 8,
+    backgroundColor: '#fff', borderRadius: 14, padding: 2,
+  },
+  startPhotoRetake: {
+    position: 'absolute', bottom: 0, left: 0, right: 0,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    backgroundColor: 'rgba(0,0,0,0.45)', paddingVertical: 8,
+  },
+  startPhotoRetakeText: { color: '#fff', fontSize: 12, fontWeight: '600' },
+
+  // Fullscreen camera (selfie mulai lembur)
+  cameraFlex: { flex: 1, backgroundColor: '#000' },
+  camTopBar: {
+    position: 'absolute', top: 0, left: 0, right: 0,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: 16, paddingBottom: 12,
+    backgroundColor: 'rgba(0,0,0,0.4)',
+  },
+  camBackBtn: {
+    width: 40, height: 40, borderRadius: 20,
+    backgroundColor: 'rgba(255,255,255,0.15)', alignItems: 'center', justifyContent: 'center',
+  },
+  camTopTitle: { fontSize: 16, fontWeight: '700', color: '#fff' },
+  cameraControls: {
+    position: 'absolute', bottom: 0, left: 0, right: 0,
+    paddingTop: 24, paddingHorizontal: 40,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    alignItems: 'center', gap: 10,
+  },
+  captureBtn: {},
+  captureRing: {
+    width: 76, height: 76, borderRadius: 38,
+    borderWidth: 4, borderColor: '#fff',
+    alignItems: 'center', justifyContent: 'center',
+  },
+  captureInner: { width: 58, height: 58, borderRadius: 29, backgroundColor: '#fff' },
+  captureBtnLabel: { color: 'rgba(255,255,255,0.85)', fontSize: 13, fontWeight: '600' },
+  cameraErrorBox: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: 'rgba(239,68,68,0.25)', borderRadius: 10, padding: 10, width: '100%',
+  },
+  cameraErrorText: { flex: 1, color: '#FCA5A5', fontSize: 12 },
 });

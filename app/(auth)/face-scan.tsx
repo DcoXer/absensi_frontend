@@ -22,7 +22,7 @@ const PRIMARY = '#1565C0';
 const SUCCESS = '#16A34A';
 
 export default function FaceScanScreen() {
-  const { user_id, employee_id } = useLocalSearchParams<{ user_id: string; employee_id: string }>();
+  const { employee_id } = useLocalSearchParams<{ employee_id: string }>();
   const { width: SW, height: SH } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const cameraRef = useRef<CameraView>(null);
@@ -57,7 +57,8 @@ export default function FaceScanScreen() {
       const res = await fetch(API_ENDPOINTS.uploadFace, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user_id, employee_id, photo: photo.base64 }),
+        // Spec (API.md §1 Register Face) only accepts employee_id + photo.
+        body: JSON.stringify({ employee_id, photo: photo.base64 }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.message ?? 'Upload wajah gagal.');

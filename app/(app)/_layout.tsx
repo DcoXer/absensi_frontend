@@ -13,6 +13,11 @@ export default function AppLayout() {
       <Stack.Screen name="(tabs)"        />
       <Stack.Screen name="check-in"      />
       <Stack.Screen name="request-form"  />
+      <Stack.Screen name="lembur-end"    />
+      <Stack.Screen name="edit-profile"  />
+      <Stack.Screen name="change-password" />
+      <Stack.Screen name="face-request"  />
+      <Stack.Screen name="notifications" />
     </Stack>
   );
 }

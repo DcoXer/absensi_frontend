@@ -14,7 +14,22 @@
       "Read(//c/laragon/bin/apache//**)",
       "Bash(cd /tmp)",
       "Bash(python3 -c ':*)",
-      "Bash(python3:*)"
+      "Bash(python3:*)",
+      "Bash(env)",
+      "PowerShell($env:REACT_NATIVE_PACKAGER_HOSTNAME = \"10.28.237.2\"; npx expo start -c)",
+      "Bash(netsh advfirewall *)",
+      "PowerShell(Get-NetConnectionProfile *)",
+      "Bash(xargs grep -l \"REACT_NATIVE_PACKAGER_HOSTNAME\")",
+      "Bash(netstat -ano)",
+      "Bash(node *)",
+      "Bash(npx tsc *)",
+      "Bash(find node_modules/@react-native-community -maxdepth 1)",
+      "Bash(find node_modules -maxdepth 1 -iname \"*datetimepicker*\" -o -maxdepth 1 -iname \"*calendar*\")",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(npm uninstall *)",
+      "Bash(nohup npx expo start --web --offline)",
+      "Bash(echo \"started with pid $!\")"
     ]
   }
 }

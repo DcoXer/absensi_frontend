@@ -1,33 +1,50 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
-  Image,
   ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
 } from 'react-native';
+import { Image as ExpoImage } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Stack } from 'expo-router';
+import { router, Stack, useFocusEffect } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import * as ImagePicker from 'expo-image-picker';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { useAuth } from '@/context/AuthContext';
+import { API_ENDPOINTS } from '@/constants/api';
 
 const PRIMARY = '#1565C0';
-const AVATAR_KEY = 'user_avatar_uri';
 
 export default function ProfileScreen() {
-  const { user, signOut } = useAuth();
+  const { user, token, signOut, updateUser } = useAuth();
   const insets = useSafeAreaInsets();
-  const [avatarUri, setAvatarUri] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
+  // Bust the <Image> cache after a fresh upload — the URL itself never changes.
+  const [photoVersion, setPhotoVersion] = useState(0);
+  const [unreadCount, setUnreadCount] = useState(0);
 
-  useEffect(() => {
-    AsyncStorage.getItem(AVATAR_KEY).then(uri => { if (uri) setAvatarUri(uri); });
-  }, []);
+  // Zero-trust: don't just trust the cached login snapshot — refresh from
+  // the backend's source of truth every time the profile tab gains focus.
+  useFocusEffect(useCallback(() => {
+    if (!token) return;
+    setRefreshing(true);
+    fetch(API_ENDPOINTS.profile, { headers: { Authorization: `Bearer ${token}` } })
+      .then(res => res.json())
+      .then(json => { if (json.status === 'success' && json.data) updateUser(json.data); })
+      .catch(() => { /* keep showing cached data if offline */ })
+      .finally(() => setRefreshing(false));
+
+    fetch(API_ENDPOINTS.notifications, { headers: { Authorization: `Bearer ${token}` } })
+      .then(res => res.json())
+      .then(json => setUnreadCount(typeof json.unread === 'number' ? json.unread : 0))
+      .catch(() => { /* keep previous count if offline */ });
+  }, [token]));
 
   const initials = (user?.name ?? 'U')
     .split(' ')
@@ -44,9 +61,9 @@ export default function ProfileScreen() {
           const { granted } = await ImagePicker.requestCameraPermissionsAsync();
           if (!granted) { Alert.alert('Izin kamera ditolak'); return; }
           const result = await ImagePicker.launchCameraAsync({
-            allowsEditing: true, aspect: [1, 1], quality: 0.7,
+            allowsEditing: true, aspect: [1, 1], quality: 0.7, base64: true,
           });
-          if (!result.canceled && result.assets[0]) saveAvatar(result.assets[0].uri);
+          if (!result.canceled && result.assets[0]?.base64) uploadAvatar(result.assets[0].base64);
         },
       },
       {
@@ -56,26 +73,34 @@ export default function ProfileScreen() {
           if (!granted) { Alert.alert('Izin galeri ditolak'); return; }
           const result = await ImagePicker.launchImageLibraryAsync({
             allowsEditing: true, aspect: [1, 1], quality: 0.7,
-            mediaTypes: 'images',
+            mediaTypes: 'images', base64: true,
           });
-          if (!result.canceled && result.assets[0]) saveAvatar(result.assets[0].uri);
+          if (!result.canceled && result.assets[0]?.base64) uploadAvatar(result.assets[0].base64);
         },
       },
-      avatarUri
-        ? { text: 'Hapus Foto', style: 'destructive', onPress: removeAvatar }
-        : { text: 'Batal', style: 'cancel' },
-      ...(avatarUri ? [{ text: 'Batal', style: 'cancel' as const }] : []),
+      { text: 'Batal', style: 'cancel' },
     ]);
   }
 
-  async function saveAvatar(uri: string) {
-    await AsyncStorage.setItem(AVATAR_KEY, uri);
-    setAvatarUri(uri);
-  }
-
-  async function removeAvatar() {
-    await AsyncStorage.removeItem(AVATAR_KEY);
-    setAvatarUri(null);
+  // Foto profil disimpan & disajikan oleh backend (POST/GET /profile/photo) —
+  // tidak ada lagi cache lokal yang dianggap sumber kebenaran (zero-trust fix).
+  async function uploadAvatar(base64: string) {
+    setUploadingPhoto(true);
+    try {
+      const res = await fetch(API_ENDPOINTS.profilePhoto, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ photo: base64 }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.message ?? 'Gagal mengunggah foto profil.');
+      await updateUser({ profile_photo_url: json.profile_photo_url ?? user?.profile_photo_url });
+      setPhotoVersion(v => v + 1);
+    } catch (e: any) {
+      Alert.alert('Gagal', e.message ?? 'Terjadi kesalahan koneksi.');
+    } finally {
+      setUploadingPhoto(false);
+    }
   }
 
   function confirmSignOut() {
@@ -98,12 +123,29 @@ export default function ProfileScreen() {
         {/* ── Header ── */}
         <View style={[styles.header, { paddingTop: insets.top + 20 }]}>
           {/* Avatar */}
-          <TouchableOpacity onPress={handlePickAvatar} activeOpacity={0.85} style={styles.avatarBtn}>
+          <TouchableOpacity
+            onPress={handlePickAvatar}
+            activeOpacity={0.85}
+            style={styles.avatarBtn}
+            disabled={uploadingPhoto}
+          >
             <View style={styles.avatarWrap}>
-              {avatarUri ? (
-                <Image source={{ uri: avatarUri }} style={styles.avatarImg} />
+              {user?.profile_photo_url ? (
+                <ExpoImage
+                  source={{
+                    uri: `${user.profile_photo_url}${user.profile_photo_url.includes('?') ? '&' : '?'}v=${photoVersion}`,
+                    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+                  }}
+                  style={styles.avatarImg}
+                  contentFit="cover"
+                />
               ) : (
                 <Text style={styles.avatarText}>{initials}</Text>
+              )}
+              {uploadingPhoto && (
+                <View style={styles.avatarLoadingOverlay}>
+                  <ActivityIndicator color="#fff" />
+                </View>
               )}
             </View>
             {/* Camera badge */}
@@ -127,12 +169,17 @@ export default function ProfileScreen() {
         >
           {/* Info card */}
           <View style={styles.card}>
-            <Text style={styles.cardTitle}>Informasi Akun</Text>
+            <View style={styles.cardTitleRow}>
+              <Text style={styles.cardTitle}>Informasi Akun</Text>
+              {refreshing && <ActivityIndicator size="small" color="#94A3B8" />}
+            </View>
             <InfoRow icon="person-outline"          label="Nama Lengkap" value={user?.name ?? '-'} />
             <Divider />
             <InfoRow icon="mail-outline"             label="Email"        value={user?.email ?? '-'} />
             <Divider />
             <InfoRow icon="call-outline"             label="Nomor HP"     value={user?.phone ?? '-'} />
+            <Divider />
+            <InfoRow icon="briefcase-outline"        label="Jabatan"      value={user?.jabatan ?? 'Belum ditetapkan'} />
             <Divider />
             <InfoRow icon="id-card-outline"          label="ID Karyawan"  value={user?.employee_id ?? '-'} mono />
             <Divider />
@@ -141,6 +188,34 @@ export default function ProfileScreen() {
               label="Status Akun"
               value={user?.is_active ? 'Aktif' : 'Tidak Aktif'}
               valueColor={user?.is_active ? '#16A34A' : '#DC2626'}
+            />
+          </View>
+
+          {/* Menu */}
+          <View style={styles.card}>
+            <MenuRow
+              icon="create-outline"
+              label="Edit Profil"
+              onPress={() => router.push('/(app)/edit-profile')}
+            />
+            <Divider />
+            <MenuRow
+              icon="lock-closed-outline"
+              label="Ganti Password"
+              onPress={() => router.push('/(app)/change-password')}
+            />
+            <Divider />
+            <MenuRow
+              icon="scan-outline"
+              label="Ganti Foto Wajah Referensi"
+              onPress={() => router.push('/(app)/face-request')}
+            />
+            <Divider />
+            <MenuRow
+              icon="notifications-outline"
+              label="Notifikasi"
+              badge={unreadCount > 0 ? unreadCount : undefined}
+              onPress={() => router.push('/(app)/notifications')}
             />
           </View>
 
@@ -186,6 +261,30 @@ function InfoRow({
   );
 }
 
+function MenuRow({
+  icon, label, onPress, badge,
+}: {
+  icon: keyof typeof Ionicons.glyphMap;
+  label: string;
+  onPress: () => void;
+  badge?: number;
+}) {
+  return (
+    <TouchableOpacity style={styles.menuRow} onPress={onPress} activeOpacity={0.7}>
+      <View style={styles.infoIconWrap}>
+        <Ionicons name={icon} size={18} color={PRIMARY} />
+      </View>
+      <Text style={styles.menuLabel}>{label}</Text>
+      {!!badge && (
+        <View style={styles.menuBadge}>
+          <Text style={styles.menuBadgeText}>{badge > 99 ? '99+' : badge}</Text>
+        </View>
+      )}
+      <Ionicons name="chevron-forward" size={18} color="#CBD5E1" />
+    </TouchableOpacity>
+  );
+}
+
 function Divider() {
   return <View style={styles.divider} />;
 }
@@ -212,6 +311,11 @@ const styles = StyleSheet.create({
   },
   avatarImg: { width: '100%', height: '100%' },
   avatarText: { fontSize: 30, fontWeight: '800', color: '#fff' },
+  avatarLoadingOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.35)',
+    alignItems: 'center', justifyContent: 'center',
+  },
   cameraBadge: {
     position: 'absolute', bottom: 0, right: 0,
     width: 28, height: 28, borderRadius: 14,
@@ -237,10 +341,13 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.07, shadowRadius: 12, elevation: 3,
     overflow: 'hidden',
   },
+  cardTitleRow: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: 18, paddingTop: 16, paddingBottom: 4,
+  },
   cardTitle: {
     fontSize: 12, fontWeight: '700', color: '#94A3B8',
     textTransform: 'uppercase', letterSpacing: 0.8,
-    paddingHorizontal: 18, paddingTop: 16, paddingBottom: 4,
   },
   infoRow: {
     flexDirection: 'row', alignItems: 'center',
@@ -256,6 +363,19 @@ const styles = StyleSheet.create({
   infoValue: { fontSize: 14, fontWeight: '600', color: '#1E293B', marginTop: 2 },
   infoValueMono: { fontFamily: 'monospace', letterSpacing: 0.5 },
   divider: { height: 1, backgroundColor: '#F1F5F9', marginHorizontal: 18 },
+
+  // Menu
+  menuRow: {
+    flexDirection: 'row', alignItems: 'center',
+    paddingHorizontal: 18, paddingVertical: 14, gap: 14,
+  },
+  menuLabel: { flex: 1, fontSize: 14, fontWeight: '600', color: '#1E293B' },
+  menuBadge: {
+    backgroundColor: '#DC2626', borderRadius: 10,
+    minWidth: 20, height: 20, paddingHorizontal: 5,
+    alignItems: 'center', justifyContent: 'center', marginRight: 4,
+  },
+  menuBadgeText: { color: '#fff', fontSize: 11, fontWeight: '700' },
 
   // Sign out
   signOutBtn: {

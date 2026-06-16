@@ -3,23 +3,20 @@ import {
   ActivityIndicator,
   Animated,
   Dimensions,
-  Image,
   ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
 } from 'react-native';
+import { Image as ExpoImage } from 'expo-image';
 import { StatusBar } from 'expo-status-bar';
 import { router, Stack } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { useAuth } from '@/context/AuthContext';
 import { API_ENDPOINTS } from '@/constants/api';
-
-const AVATAR_KEY = 'user_avatar_uri';
 
 type TodayStatus = {
   checked_in: boolean;
@@ -74,12 +71,7 @@ export default function HomeScreen() {
   const [status, setStatus]     = useState<TodayStatus | null>(null);
   const [loading, setLoading]   = useState(true);
   const [clock, setClock]       = useState('');
-  const [avatarUri, setAvatarUri] = useState<string | null>(null);
   const pulse = useRef(new Animated.Value(1)).current;
-
-  useEffect(() => {
-    AsyncStorage.getItem(AVATAR_KEY).then(uri => { if (uri) setAvatarUri(uri); });
-  }, []);
 
   // Live clock
   useEffect(() => {
@@ -180,8 +172,15 @@ export default function HomeScreen() {
               onPress={() => router.push('/(app)/(tabs)/profile')}
               activeOpacity={0.8}
             >
-              {avatarUri ? (
-                <Image source={{ uri: avatarUri }} style={styles.avatarImg} />
+              {user?.profile_photo_url ? (
+                <ExpoImage
+                  source={{
+                    uri: user.profile_photo_url,
+                    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+                  }}
+                  style={styles.avatarImg}
+                  contentFit="cover"
+                />
               ) : (
                 <Text style={styles.avatarText}>{initials}</Text>
               )}
@@ -361,9 +360,9 @@ export default function HomeScreen() {
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 function calcDuration(inTime: string, outTime: string): string {
-  // inTime/outTime are "HH:MM"
-  const [ih, im] = inTime.split(':').map(Number);
-  const [oh, om] = outTime.split(':').map(Number);
+  // toLocaleTimeString('id-ID', ...) separates hour/minute with "." (e.g. "08.30"), not ":"
+  const [ih, im] = inTime.split(/[.:]/).map(Number);
+  const [oh, om] = outTime.split(/[.:]/).map(Number);
   const totalMins = (oh * 60 + om) - (ih * 60 + im);
   if (totalMins <= 0) return '-';
   const h = Math.floor(totalMins / 60);

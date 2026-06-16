@@ -25,12 +25,17 @@ type EmployeeRequest = {
   type: RequestType;
   start_date: string;
   end_date: string | null;
-  start_time: string | null;
-  end_time: string | null;
   reason: string;
   status: RequestStatus;
   admin_notes: string | null;
   created_at: string;
+  // Lembur only (API.md §7) — auto-recorded by backend, never client-supplied.
+  // started_at is set when start_photo is verified; ended_at stays null until
+  // PATCH /requests/{id}/end is called.
+  started_at?: string | null;
+  ended_at?: string | null;
+  total_overtime_minutes?: number | null;
+  overtime_duration_formatted?: string | null;
 };
 
 type Quota = {
@@ -216,8 +221,10 @@ function RequestCard({
 
   const dateLabel = (() => {
     const fmt = (d: string) => new Date(d).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' });
+    const fmtTime = (iso?: string | null) =>
+      iso ? new Date(iso).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }) : '--:--';
     if (item.type === 'lembur') {
-      return `${fmt(item.start_date)}  ${item.start_time?.slice(0,5) ?? ''} – ${item.end_time?.slice(0,5) ?? ''}`;
+      return `${fmt(item.start_date)}  ${fmtTime(item.started_at)} – ${fmtTime(item.ended_at)}`;
     }
     if (item.end_date && item.end_date !== item.start_date) {
       return `${fmt(item.start_date)} – ${fmt(item.end_date)}`;
@@ -255,6 +262,13 @@ function RequestCard({
       <Text style={styles.cardDate}>{dateLabel}</Text>
       <Text style={styles.cardReason} numberOfLines={2}>{item.reason}</Text>
 
+      {item.type === 'lembur' && item.ended_at && item.overtime_duration_formatted && (
+        <View style={styles.overtimeChip}>
+          <Ionicons name="hourglass-outline" size={12} color={TYPE_CONFIG.lembur.color} />
+          <Text style={styles.overtimeChipText}>Total lembur: {item.overtime_duration_formatted}</Text>
+        </View>
+      )}
+
       {item.admin_notes && (
         <View style={styles.notesRow}>
           <Ionicons name="chatbubble-outline" size={12} color="#64748B" />
@@ -273,6 +287,17 @@ function RequestCard({
             ? <ActivityIndicator size="small" color="#DC2626" />
             : <><Ionicons name="close-circle-outline" size={14} color="#DC2626" /><Text style={styles.cancelBtnText}>Batalkan</Text></>
           }
+        </TouchableOpacity>
+      )}
+
+      {item.type === 'lembur' && item.status === 'approved' && !item.ended_at && (
+        <TouchableOpacity
+          style={styles.endLemburBtn}
+          onPress={() => router.push({ pathname: '/(app)/lembur-end', params: { id: String(item.id) } })}
+          activeOpacity={0.85}
+        >
+          <Ionicons name="camera-outline" size={14} color="#fff" />
+          <Text style={styles.endLemburBtnText}>Selesaikan Lembur</Text>
         </TouchableOpacity>
       )}
     </View>
@@ -358,6 +383,12 @@ const styles = StyleSheet.create({
   statusBadgeText: { fontSize: 12, fontWeight: '700' },
   cardDate:   { fontSize: 14, fontWeight: '700', color: '#1E293B' },
   cardReason: { fontSize: 13, color: '#64748B', lineHeight: 18 },
+  overtimeChip: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: '#FFFBEB', borderRadius: 8, alignSelf: 'flex-start',
+    paddingHorizontal: 8, paddingVertical: 4,
+  },
+  overtimeChipText: { fontSize: 11, fontWeight: '700', color: '#B45309' },
   notesRow: {
     flexDirection: 'row', alignItems: 'flex-start', gap: 6,
     backgroundColor: '#F8FAFC', borderRadius: 8, padding: 8,
@@ -369,4 +400,10 @@ const styles = StyleSheet.create({
     paddingVertical: 8, backgroundColor: '#FEF2F2', marginTop: 2,
   },
   cancelBtnText: { fontSize: 13, fontWeight: '700', color: '#DC2626' },
+  endLemburBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    borderRadius: 10, paddingVertical: 8, marginTop: 2,
+    backgroundColor: '#D97706',
+  },
+  endLemburBtnText: { fontSize: 13, fontWeight: '700', color: '#fff' },
 });
