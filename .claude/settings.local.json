@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:docs.expo.dev)",
+      "Bash(npx expo:*)",
+      "Bash(npm install:*)",
+      "Bash(php artisan:*)",
+      "Bash(ipconfig)",
+      "Bash(curl:*)",
+      "Bash(php:*)",
+      "Read(//c/laragon/bin/apache/apache2.4.62/logs/**)",
+      "Read(//c/laragon/var/log/apache2/**)",
+      "Read(//c/laragon/var/**)",
+      "Read(//c/laragon/bin/apache//**)",
+      "Bash(cd /tmp)",
+      "Bash(python3 -c ':*)",
+      "Bash(python3:*)"
+    ]
+  }
+}
