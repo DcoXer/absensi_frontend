@@ -27,6 +27,9 @@ export const API_ENDPOINTS = {
   notificationRead:     (id: string) => `${API_BASE_URL}/notifications/${id}/read`,
   notificationReadAll:  `${API_BASE_URL}/notifications/read-all`,
 
+  // Lokasi kantor (diambil sebelum check-in)
+  officeLocations: `${API_BASE_URL}/office-locations`,
+
   // Attendance
   checkIn:    `${API_BASE_URL}/attendance/check-in`,
   checkOut:   `${API_BASE_URL}/attendance/check-out`,

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
@@ -9,7 +9,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Stack } from 'expo-router';
+import { Stack, useFocusEffect } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 
 import { useAuth } from '@/context/AuthContext';
@@ -56,7 +56,8 @@ export default function HistoryScreen() {
   const [error, setError] = useState('');
   const [filter, setFilter] = useState<FilterKey>('semua');
 
-  useEffect(() => { fetchHistory(); }, []);
+  // Zero-trust: re-fetch setiap kali tab ini aktif supaya data selalu dari server.
+  useFocusEffect(useCallback(() => { fetchHistory(); }, []));
 
   async function fetchHistory() {
     setLoading(true);

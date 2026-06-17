@@ -1,7 +1,18 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import * as SecureStore from 'expo-secure-store';
+import * as Notifications from 'expo-notifications';
+import { Platform } from 'react-native';
 
 import { API_ENDPOINTS } from '@/constants/api';
+
+// Tampilkan notifikasi sebagai banner meski app sedang foreground
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert: true,
+    shouldPlaySound: true,
+    shouldSetBadge: true,
+  }),
+});
 
 export type User = {
   id: string;
@@ -39,20 +50,69 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     (async () => {
       try {
         const savedToken = await SecureStore.getItemAsync('auth_token');
-        const savedUser = await SecureStore.getItemAsync('auth_user');
-        if (savedToken) setToken(savedToken);
-        if (savedUser) setUser(JSON.parse(savedUser));
+        if (!savedToken) return;
+
+        // Zero-trust: jangan langsung percaya data di device.
+        // Validasi token ke server sekalian ambil fresh user data.
+        const res = await fetch(API_ENDPOINTS.profile, {
+          headers: { Authorization: `Bearer ${savedToken}` },
+        });
+
+        if (!res.ok) {
+          // Token expired / revoked — hapus session lokal.
+          await SecureStore.deleteItemAsync('auth_token');
+          await SecureStore.deleteItemAsync('auth_user');
+          return;
+        }
+
+        const json = await res.json();
+        const freshUser = json.status === 'success' && json.data ? json.data : null;
+        if (!freshUser) {
+          await SecureStore.deleteItemAsync('auth_token');
+          await SecureStore.deleteItemAsync('auth_user');
+          return;
+        }
+
+        // Simpan fresh data dari server ke SecureStore & state.
+        await SecureStore.setItemAsync('auth_user', JSON.stringify(freshUser));
+        setToken(savedToken);
+        setUser(freshUser);
+        registerPushToken(savedToken);
       } finally {
         setIsLoading(false);
       }
     })();
   }, []);
 
+  async function registerPushToken(authToken: string) {
+    try {
+      if (Platform.OS === 'web') return;
+      const { status: existing } = await Notifications.getPermissionsAsync();
+      const { status } = existing === 'granted'
+        ? { status: existing }
+        : await Notifications.requestPermissionsAsync();
+      if (status !== 'granted') return;
+
+      const { data: expoPushToken } = await Notifications.getExpoPushTokenAsync();
+      await fetch(API_ENDPOINTS.deviceToken, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({ device_token: expoPushToken }),
+      });
+    } catch {
+      // Best-effort — jangan blokir login kalau push gagal didaftarkan.
+    }
+  }
+
   async function signIn(newToken: string, newUser: User) {
     await SecureStore.setItemAsync('auth_token', newToken);
     await SecureStore.setItemAsync('auth_user', JSON.stringify(newUser));
     setToken(newToken);
     setUser(newUser);
+    registerPushToken(newToken);
   }
 
   async function signOut() {

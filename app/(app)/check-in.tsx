@@ -27,6 +27,14 @@ const SUCCESS = '#16A34A';
 const WARNING = '#D97706';
 
 type GPSResult = { lat: number; lng: number; accuracy: number };
+type OfficeLocation = {
+  id: number;
+  name: string;
+  latitude: string;
+  longitude: string;
+  radius_meters: number;
+  is_active: boolean;
+};
 
 export default function CheckInScreen() {
   const { token } = useAuth();
@@ -39,6 +47,11 @@ export default function CheckInScreen() {
   const cameraRef = useRef<CameraView>(null);
 
   const [step, setStep] = useState<'gps' | 'face' | 'done'>('gps');
+
+  // Office location — fetched on mount, required before submit
+  const [officeLocation, setOfficeLocation] = useState<OfficeLocation | null>(null);
+  const [loadingLocations, setLoadingLocations] = useState(true);
+  const [locationFetchError, setLocationFetchError] = useState('');
 
   const [gps, setGps]             = useState<GPSResult | null>(null);
   const [gpsWarning, setGpsWarning] = useState('');
@@ -53,7 +66,9 @@ export default function CheckInScreen() {
 
   const [loadingSubmit, setLoadingSubmit] = useState(false);
   const [submitError, setSubmitError]     = useState('');
-  const [doneTime, setDoneTime]           = useState('');
+  // Diisi dari server response (created_at), bukan device time.
+  const [doneTime, setDoneTime]   = useState('');
+  const [doneDate, setDoneDate]   = useState('');
 
   useEffect(() => {
     (async () => {
@@ -61,6 +76,33 @@ export default function CheckInScreen() {
       if (status !== 'granted') setGpsError('Izin lokasi ditolak. Aktifkan di pengaturan.');
     })();
   }, []);
+
+  // Fetch active office locations — required before submitting check-in/out.
+  async function fetchOfficeLocations() {
+    setLoadingLocations(true);
+    setLocationFetchError('');
+    try {
+      const res = await fetch(API_ENDPOINTS.officeLocations, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const json = await res.json();
+      // Handle both array response dan paginated (json.data.data)
+      const raw = Array.isArray(json.data) ? json.data
+        : Array.isArray(json.data?.data) ? json.data.data
+        : [];
+      const locations: OfficeLocation[] = raw;
+      // is_active bisa boolean true atau integer 1 dari MySQL
+      const active = locations.find(l => !!l.is_active) ?? locations[0] ?? null;
+      setOfficeLocation(active);
+      if (!active) setLocationFetchError('Tidak ada lokasi kantor aktif. Hubungi admin.');
+    } catch {
+      setLocationFetchError('Gagal memuat lokasi kantor. Coba lagi.');
+    } finally {
+      setLoadingLocations(false);
+    }
+  }
+
+  useEffect(() => { fetchOfficeLocations(); }, [token]);
 
   async function handleGetLocation() {
     setLoadingGps(true);
@@ -106,7 +148,7 @@ export default function CheckInScreen() {
   }
 
   async function handleSubmit() {
-    if (!gps || !selfiePhoto?.base64) return;
+    if (!gps || !selfiePhoto?.base64 || !officeLocation) return;
     setLoadingSubmit(true); setSubmitError('');
     try {
       console.log('[CheckIn] Starting submission');
@@ -114,9 +156,9 @@ export default function CheckInScreen() {
       console.log(`[CheckIn] Photo size: ${base64?.length ?? 0} chars`);
 
       const payload = JSON.stringify({
-        office_location_id: 1,
-        latitude: gps.lat, longitude: gps.lng,
-        accuracy: gps.accuracy === Infinity ? null : gps.accuracy,
+        office_location_id: officeLocation.id,
+        latitude: gps.lat,
+        longitude: gps.lng,
         photo: base64,
       });
 
@@ -135,11 +177,16 @@ export default function CheckInScreen() {
       } finally { clearTimeout(timeout); }
 
       console.log(`[CheckIn] Response received — status: ${res.status}`);
+      const json = await res.json();
       if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.message ?? 'Absensi gagal.');
+        throw new Error(json.message ?? 'Absensi gagal.');
       }
-      setDoneTime(new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }));
+      // Zero-trust: gunakan timestamp dari server (created_at), bukan jam device.
+      const serverTs = json.data?.created_at ? new Date(json.data.created_at) : new Date();
+      setDoneTime(serverTs.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }));
+      setDoneDate(serverTs.toLocaleDateString('id-ID', {
+        weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
+      }));
       setStep('done');
     } catch (e: any) {
       console.log('[CheckIn] Error name:', e.name);
@@ -194,9 +241,7 @@ export default function CheckInScreen() {
   // ── Done screen ────────────────────────────────────────────────────────────
   if (step === 'done') {
     const doneColor  = isCheckOut ? WARNING : SUCCESS;
-    const dateStr    = new Date().toLocaleDateString('id-ID', {
-      weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
-    });
+    const dateStr = doneDate;
 
     return (
       <View style={styles.doneRoot}>
@@ -249,7 +294,7 @@ export default function CheckInScreen() {
           <View style={styles.doneInfoCard}>
             <DoneRow icon="calendar-outline" label="Tanggal" value={dateStr} />
             <View style={styles.doneInfoDivider} />
-            <DoneRow icon="location-outline" label="Lokasi" value="Kantor Pusat" />
+            <DoneRow icon="location-outline" label="Lokasi" value={officeLocation?.name ?? 'Kantor'} />
             <View style={styles.doneInfoDivider} />
             <DoneRow
               icon={isCheckOut ? 'log-out-outline' : 'log-in-outline'}
@@ -310,82 +355,118 @@ export default function CheckInScreen() {
           {step === 'gps' && (
             <>
               {/* Location illustration card */}
-              <View style={styles.illustrationCard}>
-                <View style={styles.locationRingOuter}>
-                  <View style={styles.locationRingInner}>
+              <View style={[styles.illustrationCard, gpsValid && styles.illustrationCardValid]}>
+                <View style={[styles.locationRingOuter, gpsValid && styles.locationRingOuterValid]}>
+                  <View style={[styles.locationRingInner, gpsValid && styles.locationRingInnerValid]}>
                     <View style={[styles.locationDot, gpsValid && styles.locationDotValid]}>
-                      <Ionicons
-                        name={gpsValid ? 'location' : 'location-outline'}
-                        size={28}
-                        color={gpsValid ? '#fff' : '#94A3B8'}
-                      />
+                      {loadingGps
+                        ? <ActivityIndicator color={ACCENT} size="large" />
+                        : <Ionicons name={gpsValid ? 'location' : 'location-outline'} size={28} color={gpsValid ? '#fff' : '#94A3B8'} />}
                     </View>
                   </View>
                 </View>
                 <View style={styles.illustrationText}>
-                  <Text style={styles.illustrationTitle}>
-                    {loadingGps ? 'Mendeteksi lokasi...' : gpsValid ? 'Lokasi Terverifikasi' : 'Deteksi Lokasi GPS'}
+                  <Text style={[styles.illustrationTitle, gpsValid && { color: SUCCESS }]}>
+                    {loadingGps ? 'Mendeteksi lokasi...' : gpsValid ? 'Lokasi Terverifikasi ✓' : 'Deteksi Lokasi GPS'}
                   </Text>
                   <Text style={styles.illustrationSub}>
-                    {gpsValid
-                      ? 'Kamu berada di area yang valid'
+                    {loadingGps
+                      ? 'Sedang mengambil koordinat GPS...'
+                      : gpsValid
+                      ? `Akurasi ±${gps!.accuracy.toFixed(0)}m`
                       : 'Pastikan GPS aktif & izin diberikan'}
                   </Text>
                 </View>
+                {gpsValid && gps && (
+                  <View style={styles.coordRow}>
+                    <CoordChip label="LAT" value={gps.lat.toFixed(5)} />
+                    <CoordChip label="LNG" value={gps.lng.toFixed(5)} />
+                  </View>
+                )}
               </View>
 
+              {/* GPS button */}
               <TouchableOpacity
-                style={[styles.primaryBtn, { backgroundColor: ACCENT }, loadingGps && styles.btnDisabled]}
+                style={[styles.primaryBtn, { backgroundColor: gpsValid ? '#475569' : ACCENT }, loadingGps && styles.btnDisabled]}
                 onPress={handleGetLocation}
                 disabled={loadingGps}
                 activeOpacity={0.85}
               >
                 {loadingGps ? (
                   <><ActivityIndicator color="#fff" size="small" /><Text style={styles.primaryBtnText}>Mengambil lokasi...</Text></>
+                ) : gpsValid ? (
+                  <><Ionicons name="refresh-outline" size={18} color="#fff" /><Text style={styles.primaryBtnText}>Perbarui Lokasi</Text></>
                 ) : (
                   <><Ionicons name="navigate" size={18} color="#fff" /><Text style={styles.primaryBtnText}>Ambil Lokasi GPS</Text></>
                 )}
               </TouchableOpacity>
 
-              {/* GPS result */}
-              {gps && (
-                <View style={[styles.resultCard, gpsValid ? styles.resultCardSuccess : styles.resultCardWarning]}>
-                  <View style={styles.resultCardTop}>
-                    <View style={[styles.resultIcon, { backgroundColor: gpsValid ? '#DCFCE7' : '#FEF3C7' }]}>
-                      <Ionicons
-                        name={gpsValid ? 'checkmark-circle' : 'warning'}
-                        size={20}
-                        color={gpsValid ? SUCCESS : WARNING}
-                      />
-                    </View>
-                    <View>
-                      <Text style={[styles.resultTitle, { color: gpsValid ? SUCCESS : WARNING }]}>
-                        {gpsValid ? 'Lokasi Valid' : 'Akurasi Rendah'}
-                      </Text>
-                      <Text style={styles.resultSub}>
-                        Akurasi ±{gps.accuracy === Infinity ? 'N/A' : `${gps.accuracy.toFixed(0)} m`}
-                      </Text>
-                    </View>
+              {/* GPS error */}
+              {gpsError ? (
+                <StatusCard
+                  type="error"
+                  icon="location-outline"
+                  title="GPS Gagal"
+                  message={gpsError}
+                />
+              ) : null}
+
+              {/* GPS warning */}
+              {gpsWarning && !gpsError ? (
+                <StatusCard
+                  type="warning"
+                  icon="warning-outline"
+                  title="Sinyal GPS Lemah"
+                  message={gpsWarning}
+                  hint="Coba pindah ke area terbuka atau dekat jendela."
+                />
+              ) : null}
+
+              {/* Office location status */}
+              {loadingLocations ? (
+                <View style={styles.officeLoadingRow}>
+                  <ActivityIndicator size="small" color={ACCENT} />
+                  <Text style={styles.officeLoadingText}>Memuat data lokasi kantor...</Text>
+                </View>
+              ) : locationFetchError ? (
+                <StatusCard
+                  type="error"
+                  icon="business-outline"
+                  title="Lokasi Kantor Tidak Ditemukan"
+                  message={locationFetchError}
+                  action={{ label: 'Coba Lagi', onPress: fetchOfficeLocations }}
+                />
+              ) : officeLocation ? (
+                <View style={styles.officeSuccessRow}>
+                  <View style={styles.officeSuccessIcon}>
+                    <Ionicons name="business" size={14} color={SUCCESS} />
                   </View>
-                  <View style={styles.coordRow}>
-                    <CoordChip label="LAT" value={gps.lat.toFixed(5)} />
-                    <CoordChip label="LNG" value={gps.lng.toFixed(5)} />
+                  <Text style={styles.officeSuccessText}>{officeLocation.name}</Text>
+                  <View style={styles.officeSuccessBadge}>
+                    <Ionicons name="checkmark" size={10} color="#fff" />
                   </View>
                 </View>
-              )}
+              ) : null}
 
-              {gpsWarning ? <AlertBox type="warning" message={gpsWarning} /> : null}
-              {gpsError   ? <AlertBox type="error"   message={gpsError}   /> : null}
-
+              {/* Continue button */}
               <TouchableOpacity
-                style={[styles.primaryBtn, { backgroundColor: SUCCESS }, !gpsValid && styles.btnDisabled]}
+                style={[styles.primaryBtn, { backgroundColor: SUCCESS }, (!gpsValid || !!locationFetchError || loadingLocations) && styles.btnDisabled]}
                 onPress={() => setStep('face')}
-                disabled={!gpsValid}
+                disabled={!gpsValid || !!locationFetchError || loadingLocations}
                 activeOpacity={0.85}
               >
                 <Text style={styles.primaryBtnText}>Lanjut ke Foto Selfie</Text>
-                <Ionicons name="arrow-forward" size={18} color={gpsValid ? '#fff' : '#94A3B8'} />
+                <Ionicons name="arrow-forward" size={18} color={gpsValid && !locationFetchError ? '#fff' : '#94A3B8'} />
               </TouchableOpacity>
+
+              {/* Hint why button is disabled */}
+              {(!gpsValid || !!locationFetchError) && !loadingLocations && !loadingGps ? (
+                <Text style={styles.disabledHint}>
+                  {!gpsValid
+                    ? '* Ambil lokasi GPS terlebih dahulu untuk melanjutkan'
+                    : '* Lokasi kantor harus tersedia untuk melanjutkan'}
+                </Text>
+              ) : null}
             </>
           )}
 
@@ -444,25 +525,34 @@ export default function CheckInScreen() {
                 </View>
               )}
 
-              {cameraError  ? <AlertBox type="error" message={cameraError}  /> : null}
-              {submitError  ? <AlertBox type="error" message={submitError}  /> : null}
+              {cameraError ? (
+                <StatusCard type="error" icon="camera-outline" title="Kamera Gagal" message={cameraError} />
+              ) : null}
+
+              {submitError ? (
+                <StatusCard type="error" icon="shield-outline" title="Absensi Gagal" message={submitError} hint="Pastikan wajah jelas terlihat dan posisi GPS valid." />
+              ) : null}
 
               <TouchableOpacity
                 style={[
                   styles.primaryBtn,
                   { backgroundColor: ACCENT },
-                  (!selfiePhoto || loadingSubmit) && styles.btnDisabled,
+                  (!selfiePhoto || loadingSubmit || !officeLocation) && styles.btnDisabled,
                 ]}
                 onPress={handleSubmit}
-                disabled={!selfiePhoto || loadingSubmit}
+                disabled={!selfiePhoto || loadingSubmit || !officeLocation}
                 activeOpacity={0.85}
               >
                 {loadingSubmit ? (
-                  <><ActivityIndicator color="#fff" size="small" /><Text style={styles.primaryBtnText}>Memverifikasi...</Text></>
+                  <><ActivityIndicator color="#fff" size="small" /><Text style={styles.primaryBtnText}>Memverifikasi wajah...</Text></>
                 ) : (
                   <><Ionicons name="shield-checkmark" size={18} color={!selfiePhoto ? '#94A3B8' : '#fff'} /><Text style={styles.primaryBtnText}>Verifikasi & Absen</Text></>
                 )}
               </TouchableOpacity>
+
+              {!selfiePhoto && !loadingSubmit ? (
+                <Text style={styles.disabledHint}>* Ambil foto selfie terlebih dahulu</Text>
+              ) : null}
             </>
           )}
         </ScrollView>
@@ -515,6 +605,41 @@ function AlertBox({ type, message }: { type: 'warning' | 'error'; message: strin
       <Text style={[styles.alertText, isErr ? styles.alertTextError : styles.alertTextWarning]}>
         {message}
       </Text>
+    </View>
+  );
+}
+
+function StatusCard({ type, icon, title, message, hint, action }: {
+  type: 'error' | 'warning';
+  icon: keyof typeof Ionicons.glyphMap;
+  title: string;
+  message: string;
+  hint?: string;
+  action?: { label: string; onPress: () => void };
+}) {
+  const isErr = type === 'error';
+  const color      = isErr ? '#DC2626' : '#B45309';
+  const bgColor    = isErr ? '#FEF2F2' : '#FFFBEB';
+  const borderColor = isErr ? '#FECACA' : '#FDE68A';
+  const iconBg     = isErr ? '#FEE2E2' : '#FEF3C7';
+  return (
+    <View style={[styles.statusCard, { backgroundColor: bgColor, borderColor }]}>
+      <View style={styles.statusCardTop}>
+        <View style={[styles.statusCardIconWrap, { backgroundColor: iconBg }]}>
+          <Ionicons name={icon} size={18} color={color} />
+        </View>
+        <View style={{ flex: 1 }}>
+          <Text style={[styles.statusCardTitle, { color }]}>{title}</Text>
+          <Text style={styles.statusCardMessage}>{message}</Text>
+          {hint ? <Text style={styles.statusCardHint}>{hint}</Text> : null}
+        </View>
+      </View>
+      {action ? (
+        <TouchableOpacity style={[styles.statusCardAction, { borderColor }]} onPress={action.onPress}>
+          <Ionicons name="refresh" size={13} color={color} />
+          <Text style={[styles.statusCardActionText, { color }]}>{action.label}</Text>
+        </TouchableOpacity>
+      ) : null}
     </View>
   );
 }
@@ -616,24 +741,62 @@ const styles = StyleSheet.create({
   },
   btnDisabled: { backgroundColor: '#E2E8F0', shadowOpacity: 0 },
   primaryBtnText: { color: '#fff', fontSize: 15, fontWeight: '700' },
+  disabledHint: { textAlign: 'center', fontSize: 12, color: '#94A3B8', marginTop: -6 },
 
-  // GPS result card
-  resultCard: {
-    borderRadius: 16, padding: 16, gap: 14, borderWidth: 1.5,
-  },
-  resultCardSuccess: { backgroundColor: '#F0FDF4', borderColor: '#BBF7D0' },
-  resultCardWarning: { backgroundColor: '#FFFBEB', borderColor: '#FDE68A' },
-  resultCardTop: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  resultIcon: { width: 40, height: 40, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
-  resultTitle: { fontSize: 14, fontWeight: '700' },
-  resultSub: { fontSize: 12, color: '#64748B', marginTop: 2 },
-  coordRow: { flexDirection: 'row', gap: 10 },
+  // GPS coord chips
+  coordRow: { flexDirection: 'row', gap: 10, width: '100%' },
   coordChip: {
     flex: 1, backgroundColor: '#fff', borderRadius: 10,
     paddingHorizontal: 12, paddingVertical: 8,
   },
   coordChipLabel: { fontSize: 9, fontWeight: '700', color: '#94A3B8', textTransform: 'uppercase' },
   coordChipValue: { fontSize: 13, fontWeight: '700', color: '#1E293B', fontFamily: 'monospace', marginTop: 2 },
+
+  // Illustration card valid state
+  illustrationCardValid: { borderWidth: 2, borderColor: '#BBF7D0' },
+  locationRingOuterValid: { backgroundColor: '#DCFCE7' },
+  locationRingInnerValid: { backgroundColor: '#BBF7D0' },
+
+  // Office location status
+  officeLoadingRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    backgroundColor: '#fff', borderRadius: 14, padding: 14,
+    borderWidth: 1, borderColor: '#E2E8F0',
+  },
+  officeLoadingText: { fontSize: 13, color: '#64748B' },
+  officeSuccessRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: '#F0FDF4', borderRadius: 14, padding: 12,
+    borderWidth: 1, borderColor: '#BBF7D0',
+  },
+  officeSuccessIcon: {
+    width: 28, height: 28, borderRadius: 8,
+    backgroundColor: '#DCFCE7', alignItems: 'center', justifyContent: 'center',
+  },
+  officeSuccessText: { flex: 1, fontSize: 13, fontWeight: '600', color: '#15803D' },
+  officeSuccessBadge: {
+    width: 18, height: 18, borderRadius: 9,
+    backgroundColor: SUCCESS, alignItems: 'center', justifyContent: 'center',
+  },
+
+  // StatusCard
+  statusCard: {
+    borderRadius: 16, borderWidth: 1.5, padding: 14, gap: 10,
+  },
+  statusCardTop: { flexDirection: 'row', gap: 12 },
+  statusCardIconWrap: {
+    width: 40, height: 40, borderRadius: 12,
+    alignItems: 'center', justifyContent: 'center',
+    flexShrink: 0,
+  },
+  statusCardTitle: { fontSize: 14, fontWeight: '700', marginBottom: 2 },
+  statusCardMessage: { fontSize: 13, color: '#475569', lineHeight: 18 },
+  statusCardHint: { fontSize: 12, color: '#94A3B8', marginTop: 4, fontStyle: 'italic' },
+  statusCardAction: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    borderTopWidth: 1, paddingTop: 10, marginTop: 2,
+  },
+  statusCardActionText: { fontSize: 13, fontWeight: '700' },
 
   // Alert boxes
   alertBox: {

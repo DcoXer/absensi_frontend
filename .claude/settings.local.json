@@ -30,7 +30,8 @@
       "Bash(npm uninstall *)",
       "Bash(nohup npx expo start --web --offline)",
       "Bash(echo \"started with pid $!\")",
-      "Bash(git status *)"
+      "Bash(git status *)",
+      "Bash(ls *.json)"
     ]
   }
 }

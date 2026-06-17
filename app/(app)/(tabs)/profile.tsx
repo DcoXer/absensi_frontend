@@ -25,8 +25,6 @@ export default function ProfileScreen() {
   const insets = useSafeAreaInsets();
   const [refreshing, setRefreshing] = useState(false);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
-  // Bust the <Image> cache after a fresh upload — the URL itself never changes.
-  const [photoVersion, setPhotoVersion] = useState(0);
   const [unreadCount, setUnreadCount] = useState(0);
 
   // Zero-trust: don't just trust the cached login snapshot — refresh from
@@ -82,8 +80,8 @@ export default function ProfileScreen() {
     ]);
   }
 
-  // Foto profil disimpan & disajikan oleh backend (POST/GET /profile/photo) —
-  // tidak ada lagi cache lokal yang dianggap sumber kebenaran (zero-trust fix).
+  // Zero-trust: setelah upload, jangan trust response upload langsung — re-fetch
+  // GET /profile supaya server yang jadi satu-satunya sumber kebenaran.
   async function uploadAvatar(base64: string) {
     setUploadingPhoto(true);
     try {
@@ -94,8 +92,14 @@ export default function ProfileScreen() {
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json.message ?? 'Gagal mengunggah foto profil.');
-      await updateUser({ profile_photo_url: json.profile_photo_url ?? user?.profile_photo_url });
-      setPhotoVersion(v => v + 1);
+      // Re-fetch profil dari server — server adalah satu-satunya sumber kebenaran.
+      const profileRes = await fetch(API_ENDPOINTS.profile, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const profileJson = await profileRes.json();
+      if (profileJson.status === 'success' && profileJson.data) {
+        await updateUser(profileJson.data);
+      }
     } catch (e: any) {
       Alert.alert('Gagal', e.message ?? 'Terjadi kesalahan koneksi.');
     } finally {
@@ -133,11 +137,12 @@ export default function ProfileScreen() {
               {user?.profile_photo_url ? (
                 <ExpoImage
                   source={{
-                    uri: `${user.profile_photo_url}${user.profile_photo_url.includes('?') ? '&' : '?'}v=${photoVersion}`,
+                    uri: user.profile_photo_url,
                     headers: token ? { Authorization: `Bearer ${token}` } : undefined,
                   }}
                   style={styles.avatarImg}
                   contentFit="cover"
+                  cachePolicy="none"
                 />
               ) : (
                 <Text style={styles.avatarText}>{initials}</Text>

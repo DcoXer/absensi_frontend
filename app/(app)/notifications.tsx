@@ -74,17 +74,15 @@ export default function NotificationsScreen() {
 
   async function handleMarkRead(item: NotificationItem) {
     if (item.read_at) return;
-    // Optimistic-but-verified: update locally, but the next focus re-fetch will
-    // reconcile with the backend's actual state regardless.
-    setItems(prev => prev.map(n => n.id === item.id ? { ...n, read_at: new Date().toISOString() } : n));
-    setUnread(prev => Math.max(0, prev - 1));
     try {
       await fetch(API_ENDPOINTS.notificationRead(item.id), {
         method: 'PATCH',
         headers: { Authorization: `Bearer ${token}` },
       });
+      // Zero-trust: re-fetch dari server — jangan pakai device timestamp untuk read_at.
+      await fetchNotifications();
     } catch {
-      // Best-effort; re-fetch will fix any mismatch on next visit.
+      // Best-effort.
     }
   }
 

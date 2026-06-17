@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Animated,
@@ -11,7 +11,7 @@ import {
 } from 'react-native';
 import { Image as ExpoImage } from 'expo-image';
 import { StatusBar } from 'expo-status-bar';
-import { router, Stack } from 'expo-router';
+import { router, Stack, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -70,6 +70,7 @@ export default function HomeScreen() {
   const insets = useSafeAreaInsets();
   const [status, setStatus]     = useState<TodayStatus | null>(null);
   const [loading, setLoading]   = useState(true);
+  const [unread, setUnread]     = useState(0);
   const [clock, setClock]       = useState('');
   const pulse = useRef(new Animated.Value(1)).current;
 
@@ -97,28 +98,31 @@ export default function HomeScreen() {
     return () => anim.stop();
   }, []);
 
-  useEffect(() => { fetchToday(); }, []);
+  // Zero-trust: re-fetch setiap kali screen ini aktif — bukan cuma saat mount.
+  // Ini penting agar status absensi selalu dari server, bukan state lama.
+  useFocusEffect(useCallback(() => { fetchToday(); }, []));
 
   async function fetchToday() {
     setLoading(true);
     try {
-      const res  = await fetch(API_ENDPOINTS.today, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      const json = await res.json();
+      const [todayRes, notifRes] = await Promise.all([
+        fetch(API_ENDPOINTS.today,         { headers: { Authorization: `Bearer ${token}` } }),
+        fetch(API_ENDPOINTS.notifications, { headers: { Authorization: `Bearer ${token}` } }),
+      ]);
+
+      const json = await todayRes.json();
       const d    = json.data;
-
       const toTime = (iso?: string | null) =>
-        iso
-          ? new Date(iso).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })
-          : null;
-
+        iso ? new Date(iso).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }) : null;
       setStatus({
         checked_in:     !!d?.check_in,
         check_in_time:  toTime(d?.check_in?.created_at),
         checked_out:    !!d?.check_out,
         check_out_time: toTime(d?.check_out?.created_at),
       });
+
+      const notifJson = await notifRes.json();
+      setUnread(notifJson.unread ?? 0);
     } catch {
       // ignore
     } finally {
@@ -167,6 +171,21 @@ export default function HomeScreen() {
                 {user?.name?.split(' ')[0] ?? 'Karyawan'}
               </Text>
             </View>
+            {/* Bell icon */}
+            <TouchableOpacity
+              style={styles.bellBtn}
+              onPress={() => router.push('/(app)/notifications')}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="notifications-outline" size={22} color="#fff" />
+              {unread > 0 && (
+                <View style={styles.bellBadge}>
+                  <Text style={styles.bellBadgeText}>{unread > 99 ? '99+' : unread}</Text>
+                </View>
+              )}
+            </TouchableOpacity>
+
+            {/* Avatar */}
             <TouchableOpacity
               style={styles.avatar}
               onPress={() => router.push('/(app)/(tabs)/profile')}
@@ -180,6 +199,7 @@ export default function HomeScreen() {
                   }}
                   style={styles.avatarImg}
                   contentFit="cover"
+                  cachePolicy="none"
                 />
               ) : (
                 <Text style={styles.avatarText}>{initials}</Text>
@@ -384,6 +404,21 @@ const styles = StyleSheet.create({
   heroRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 12 },
   greeting: { fontSize: 13, color: 'rgba(255,255,255,0.65)', fontWeight: '500' },
   userName: { fontSize: 24, fontWeight: '800', color: '#fff', marginTop: 2 },
+  bellBtn: {
+    width: 44, height: 44, borderRadius: 22,
+    backgroundColor: 'rgba(255,255,255,0.15)',
+    alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.25)',
+  },
+  bellBadge: {
+    position: 'absolute', top: -2, right: -2,
+    minWidth: 18, height: 18, borderRadius: 9,
+    backgroundColor: '#EF4444',
+    alignItems: 'center', justifyContent: 'center',
+    paddingHorizontal: 4,
+    borderWidth: 1.5, borderColor: '#fff',
+  },
+  bellBadgeText: { color: '#fff', fontSize: 10, fontWeight: '800' },
   avatar: {
     width: 48, height: 48, borderRadius: 24,
     backgroundColor: 'rgba(255,255,255,0.18)',

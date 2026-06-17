@@ -40,7 +40,19 @@ export default function LoginScreen() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.message ?? 'Login gagal.');
-      await signIn(data.data.token, data.data.user);
+
+      // Zero-trust: login response hanya berisi partial user data.
+      // Re-fetch GET /profile pakai token baru buat dapetin data lengkap dari server
+      // (termasuk profile_photo_url, has_face, created_at, dll).
+      const profileRes = await fetch(API_ENDPOINTS.profile, {
+        headers: { Authorization: `Bearer ${data.data.token}` },
+      });
+      const profileJson = await profileRes.json();
+      const fullUser = (profileJson.status === 'success' && profileJson.data)
+        ? profileJson.data
+        : data.data.user;
+
+      await signIn(data.data.token, fullUser);
     } catch (e: any) {
       setError(e.message);
     } finally {
